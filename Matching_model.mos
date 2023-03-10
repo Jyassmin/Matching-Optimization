@@ -1,0 +1,223 @@
+model ModelName
+  options noimplicit
+  uses "mmxprs"
+
+  parameters
+    ! DATAFILE= '~.txt'            !정보를 담은 데이터파일 이름
+    OUTFILENAME= 'Matching_sol.csv'  !solution 출력 내용을 담을 파일 이름
+  end-parameters
+
+!1.객체선언
+  declarations
+  !INDEX
+    K: set of integer !Korean
+    I, J: set of integer !Foreigner
+    ii: integer ! Data index
+  !INPUT DATA
+    !한국학생의 성별, 나이, 매칭희망국가(1,2,3지망), 중국어 자격증or학과, 일본어 자격증or학과여부
+    K_NAME: array(K) of string
+    K_SEX: array(K) of string
+    K_AGE: array(K) of integer
+    K_LAN_1: array(K) of string
+    K_LAN_2: array(K) of string
+    K_LAN_3: array(K) of string
+    K_CHI: array(K) of string
+    K_JAP: array(K) of string
+    !유학생의 성별, 나이, 출신언어권, 기숙사거주여부, 한국어 급수
+    F_NAME: array(I) of string
+    F_SEX: array(I) of string
+    F_AGE: array(I) of integer
+    F_LAN: array(I) of string
+    F_DOM: array(I) of string
+    F_CLASS: array(J) of integer
+  !Set of score(필수조건이 아닌 충분조건으로 각 조건에 대해score(=가중치)를 준 뒤. score를 Maxmise시킴으로써 최적화된 매칭 유도)
+    SCORE_LAN_1: array(K,I) of integer !한국학생이 원하는 1지망 언어권의 학생과 매칭되면 score +3
+    SCORE_LAN_2: array(K,I) of integer !한국학생이 원하는 2지망 언어권의 학생과 매칭되면 score +2
+    SCORE_LAN_3: array(K,I) of integer !한국학생이 원하는 3지망 언어권의 학생과 매칭되면 score +1
+    SCORE_SEX: array(K,I) of integer !한국학생과 유학생의 성별이 같다면 score +1
+    SCORE_AGE: array(K,I) of integer !한국학생과 유학생의 나이가 같으면 score +1
+
+    SCORE_CLASS: array(I,J) of integer !1:2매칭 시 유학생들끼리 한국어 급수가 같다면 score +1
+    SCORE_DOM: array(I,J) of integer !1:2매칭 시 유학생들이 같은 기숙사에 산다면 score +1
+    SCORE_CONTRY: array(I,J) of integer !1:2매칭 시 유학생들이 다른 언어권이라면 score +1
+
+    m1: array(K,I) of mpvar! Matching 1:1
+    m2: array(K,I,J) of mpvar! Matching 1:2
+
+  !필수제약식
+    BINARY_M1: array(K,I) of linctr
+    BINARY_M2: array(K,I,J) of linctr
+
+    COUNT_PEOPLE: linctr ! 매칭 대상 인원과 매칭된 인원이 같게한다.(모든 인원이 매칭되게)
+
+    KO_1: array(K) of linctr ! 한국학생들은 1번씩 매칭되야한다
+    KO_2: array(K) of linctr ! 중국어 자격증이 있으면 중국인유학생이랑 매칭시켜야한다
+    KO_3: array(K) of linctr ! 일본어 자격증이 있으면 일본유학생이랑 매칭시켜야한다
+
+    FO_1: array(I) of linctr ! 유학생들은 1번씩 매칭되야한다
+    FO_2: array(I) of linctr ! 1:2매칭 때 한 유학생1의 급수가 1,2급이라면 3~6급의 유학생과는 매칭이 되면 안된다
+    FO_3: array(I) of linctr ! 1:2매칭 때 한 유학생2의 급수가 1,2급이라면 3~6급의 유학생과는 매칭이 되면 안된다
+    FO_4: array(1..20) of linctr ! 기타 문의로 1:1매칭만을 희망하는 유학생
+    FO_5: array(1..20) of linctr ! 기타 문의로 특정 성별과의 매칭을 희망하는 유학생
+
+    maxScore: linctr ! Set of score(가중치)합이 최대로
+  end-declarations
+
+
+!2.데이터 불러오기(xlsx에서 txt로 복사. fopen사용)
+  fopen("data/matching_korean_jaemin.txt", F_INPUT)
+    readln
+  while(not iseof)
+    readln(ii, "\t", K_NAME(ii), "\t", K_SEX(ii), "\t", K_AGE(ii), "\t", K_LAN_1(ii), "\t", K_LAN_2(ii), "\t", K_LAN_3(ii), "\t", K_CHI(ii), "\t", K_JAP(ii))
+  fclose(F_INPUT)
+
+  fopen("data/matching_foreigner_jaemin.txt", F_INPUT)
+    readln
+  while(not iseof)
+    readln(ii, "\t", F_NAME(ii), "\t", F_SEX(ii), "\t", F_AGE(ii), "\t", F_LAN(ii), "\t", F_DOM(ii), "\t", F_CLASS(ii))
+  fclose(F_INPUT)
+
+
+!3.모델수립 및 풀이
+  !score calculation
+  forall(k in K, i in I) do
+    if K_LAN_1(k)=F_LAN(i) then
+      SCORE_LAN_1(k,i) := 3
+    else
+      SCORE_LAN_1(k,i) := 0
+    end-if
+  end-do
+
+  forall(k in K, i in I) do
+    if K_LAN_2(k)=F_LAN(i) then
+      SCORE_LAN_2(k,i) := 2
+    else
+      SCORE_LAN_2(k,i) := 0
+    end-if
+  end-do
+
+  forall(k in K, i in I) do
+    if K_LAN_3(k)=F_LAN(i) then
+      SCORE_LAN_3(k,i) := 1
+    else
+      SCORE_LAN_3(k,i) := 0
+    end-if
+  end-do
+
+  forall(k in K, i in I) do
+    if K_SEX(k)=F_SEX(i) then
+      SCORE_SEX(k,i) := 1
+    else
+      SCORE_SEX(k,i) := 0
+    end-if
+  end-do
+
+  forall(k in K, i in I) do
+    if K_AGE(k)=F_AGE(i) then
+      SCORE_AGE(k,i) := 1
+    else
+      SCORE_AGE(k,i) := 0
+    end-if
+  end-do
+
+  forall(i in I, j in J | i<>j) do
+    if F_CLASS(i)=F_CLASS(j) then
+      SCORE_CLASS(i,j) := 1
+    else
+      SCORE_CLASS(i,j) := 0
+    end-if
+  end-do
+
+  forall(i in I, j in J | i<>j) do
+    if F_DOM(i)=F_DOM(j) then
+      SCORE_DOM(i,j) := 1
+    else
+      SCORE_DOM(i,j) := 0
+    end-if
+  end-do
+
+  forall(i in I, j in J | i<>j) do
+    if F_LAN(i)<>F_LAN(j) then
+      SCORE_CONTRY(i,j) := 1
+    else
+      SCORE_CONTRY(i,j) := 0
+    end-if
+  end-do
+
+
+  forall(k in K, i in I) BINARY_M1(k,i):= m1(k,i) is_binary
+  forall(k in K, i in I, j in J) BINARY_M2(k,i,j):= m2(k,i,j) is_binary
+
+  COUNT_PEOPLE:= sum(k in K, i in I) (m1(k,i)*2) + sum(k in K, i in I, j in J) (m2(k,i,j)*3) = getsize(K) + getsize(I)
+
+  forall(k in K) KO_1(k):= sum(i in I) m1(k,i) + sum(i in I, j in J | i<>j) m2(k,i,j) = 1
+  forall(k in K | K_CHI(k)='o') KO_2(k):= sum(i in I | F_LAN(i)='중국') m1(k,i) + sum(i in I, j in J | i<>j and F_LAN(i)='중국' and F_LAN(j)='중국') m2(k,i,j) = 1
+  forall(k in K | K_JAP(k)='o') KO_3(k):= sum(i in I | F_LAN(i)='일본') m1(k,i) + sum(i in I, j in J | i<>j and F_LAN(i)='일본' and F_LAN(j)='일본') m2(k,i,j) = 1
+
+  forall(i in I) FO_1(i):= sum(k in K) m1(k,i) + sum(k in K, j in J | i<>j) m2(k,i,j) + sum(k in K, j in J | i<>j) m2(k,j,i) = 1
+  forall(i in I | F_CLASS(i)=1 or F_CLASS(i)=2) FO_2(i):= sum(k in K) m1(k,i) + sum(k in K, j in J | (F_CLASS(j)=1 or F_CLASS(j)=2) and (i<>j)) m2(k,i,j) + sum(k in K, j in J | (F_CLASS(j)=1 or F_CLASS(j)=2) and (i<>j)) m2(k,j,i)= 1
+
+  forall(i in I | F_CLASS(i)<>1 and F_CLASS(i)<>2) FO_3(i):= sum(k in K) m1(k,i) + sum(k in K, j in J | F_CLASS(j)<>1 and F_CLASS(j)<>2 and i<>j) m2(k,i,j) + sum(k in K, j in J | F_CLASS(j)<>1 and F_CLASS(j)<>2 and i<>j) m2(k,j,i) = 1
+
+
+  ! FO_4(1):= m1(1,56) + sum(i in I) m2(1,i,56) + sum(j in J) m2(1,56,j) = 1
+
+  ! FO_4(2):= sum(i in K | F_DOM(i)='o') m1(3,i) + sum(i in I, j in J | F_DOM(i)='o' and F_DOM(j)='o') m2(3,i,j)
+  ! FO_4(3):= sum(i in K | F_DOM(i)='o') m1(22,i) + sum(i in I, j in J | F_DOM(i)='o' and F_DOM(j)='o') m2(22,i,j)
+  ! FO_4(4):= sum(i in K | F_DOM(i)='o') m1(25,i) + sum(i in I, j in J | F_DOM(i)='o' and F_DOM(j)='o') m2(25,i,j)
+
+  ! FO_4(5):= sum(k in K) m1(k,47) = 1
+  ! FO_4(6):= sum(k in K) m1(k,51) = 1
+
+
+  ! FO_5(1):= sum(k in K | K_SEX(k)='여자') m1(k,5) + sum(k in K, i in I | K_SEX(k)='여자') m2(k,i,5) + sum(k in K, j in J | K_SEX(k)='여자') m2(k,5,j) = 1
+  ! FO_5(2):= sum(k in K | K_SEX(k)='여자') m1(k,9) + sum(k in K, i in I | K_SEX(k)='여자') m2(k,i,9) + sum(k in K, j in J | K_SEX(k)='여자') m2(k,9,j) = 1
+  ! FO_5(3):= sum(k in K | K_SEX(k)='여자') m1(k,19) + sum(k in K, i in I | K_SEX(k)='여자') m2(k,i,19) + sum(k in K, j in J | K_SEX(k)='여자') m2(k,19,j) = 1
+  ! FO_5(4):= sum(k in K | K_SEX(k)='여자') m1(k,27) + sum(k in K, i in I | K_SEX(k)='여자') m2(k,i,27) + sum(k in K, j in J | K_SEX(k)='여자') m2(k,27,j) = 1
+  ! FO_5(5):= sum(k in K | K_SEX(k)='여자') m1(k,33) + sum(k in K, i in I | K_SEX(k)='여자') m2(k,i,33) + sum(k in K, j in J | K_SEX(k)='여자') m2(k,33,j) = 1
+  ! FO_5(6):= sum(k in K | K_SEX(k)='여자') m1(k,42) + sum(k in K, i in I | K_SEX(k)='여자') m2(k,i,42) + sum(k in K, j in J | K_SEX(k)='여자') m2(k,42,j) = 1
+  ! FO_5(7):= sum(k in K | K_SEX(k)='여자') m1(k,44) + sum(k in K, i in I | K_SEX(k)='여자') m2(k,i,44) + sum(k in K, j in J | K_SEX(k)='여자') m2(k,44,j) = 1
+  ! FO_5(8):= sum(k in K | K_SEX(k)='여자') m1(k,46) + sum(k in K, i in I | K_SEX(k)='여자') m2(k,i,46) + sum(k in K, j in J | K_SEX(k)='여자') m2(k,46,j) = 1
+  ! FO_5(9):= sum(k in K | K_SEX(k)='여자') m1(k,50) + sum(k in K, i in I | K_SEX(k)='여자') m2(k,i,50) + sum(k in K, j in J | K_SEX(k)='여자') m2(k,50,j) = 1
+  ! FO_5(10):= sum(k in K | K_SEX(k)='여자') m1(k,53) + sum(k in K, i in I | K_SEX(k)='여자') m2(k,i,53) + sum(k in K, j in J | K_SEX(k)='여자') m2(k,53,j) = 1
+
+  maxScore:= sum(k in K, i in I) (m1(k,i)*SCORE_LAN_1(k,i)+m1(k,i)*SCORE_LAN_2(k,i)+m1(k,i)*SCORE_LAN_3(k,i)) + sum(k in K, i in I) (m1(k,i)*SCORE_SEX(k,i)) + sum(k in K, i in I) (m1(k,i)*SCORE_AGE(k,i)) + sum(k in K, i in I, j in J | i<>j) ((m2(k,i,j)*SCORE_LAN_1(k,i)+(m2(k,i,j)*SCORE_LAN_1(k,j))) +(m2(k,i,j)*SCORE_LAN_2(k,i)+(m2(k,i,j)*SCORE_LAN_2(k,j)))+(m2(k,i,j)*SCORE_LAN_3(k,i)+(m2(k,i,j)*SCORE_LAN_3(k,j)))) + sum(k in K, i in I, j in J | i<>j) (m2(k,i,j)*SCORE_SEX(k,i)+(m2(k,i,j)*SCORE_SEX(k,j))) + sum(k in K, i in I, j in J | i<>j) (m2(k,i,j)*SCORE_AGE(k,i)+(m2(k,i,j)*SCORE_AGE(k,j))) + sum(k in K, i in I, j in J | i<>j) (m2(k,i,j)*SCORE_CLASS(i,j)) + sum(k in K, i in I, j in J | i<>j) (m2(k,i,j)*SCORE_DOM(i,j)) + sum(k in K, i in I, j in J | i<>j) (m2(k,i,j)*SCORE_CONTRY(i,j))
+
+
+
+  !setparam('XPRS_VERBOSE', TRUE)
+  maximise(maxScore)
+
+
+!4. 해의상태 확인 및 출력
+  writeln("------------------")
+  case getprobstat of
+    XPRS_OPT: writeln('optimal')
+    XPRS_INF: writeln('infeasible')
+    XPRS_UNB: writeln('unbounded')
+    XPRS_UNF: writeln('unfinished')
+  else
+    writeln('unexpected problem status!')
+  end-case
+
+
+!5.optimal solution 및 optimal value 출력
+  writeln("------- SCORE -----------")
+  writeln("MAX SCORE = ", getobjval)
+  writeln("------- 1:1 MATCH -----------")
+  forall( k in K, i in I | getsol(m1(k,i)) <> 0) writeln("[ ", K_NAME(k), " + ", F_NAME(i)," ]")
+  writeln("------- 1:2 MATCH -----------")
+  forall( k in K, i in I, j in J| getsol(m2(k,i,j)) <> 0) writeln("[ ", K_NAME(k), " + ", F_NAME(i), " + ", F_NAME(j), " ]")
+
+
+!6.Export Solution written in file
+  fopen(OUTFILENAME, F_OUTPUT)
+  writeln("------- 1:1 MATCH -----------")
+  forall( k in K, i in I | getsol(m1(k,i)) <> 0) writeln(K_NAME(k), ", ", F_NAME(i))
+  writeln("------- 1:2 MATCH -----------")
+  forall( k in K, i in I, j in J| getsol(m2(k,i,j)) <> 0) writeln(K_NAME(k), ", ", F_NAME(i), ", ", F_NAME(j))
+  fclose(F_OUTPUT)
+
+end-model
+
+
